@@ -11,7 +11,7 @@ import {
 } from "@elizaos/core";
 import { composeContext } from "@elizaos/core";
 import { generateMessageResponse } from "@elizaos/core";
-import { messageCompletionFooter } from "@elizaos/core";
+// import { messageCompletionFooter } from "@elizaos/core";
 import { AgentRuntime } from "@elizaos/core";
 import {
     Content,
@@ -25,6 +25,7 @@ import { settings } from "@elizaos/core";
 import { createApiRouter } from "./api.ts";
 import * as fs from "fs";
 import * as path from "path";
+import { LoopMessageAPI } from "./imessage/loopApi.ts";
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -43,6 +44,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+const messageCompletionFooter = "\nResponse format should be formatted in a JSON block like this:\n```json\n{ \"user\": \"{{agentName}}\", \"text\": \"string\", \"action\": \"string\" }\n```";
 export const messageHandlerTemplate =
     // {{goals}}
     `# Action Examples
@@ -72,6 +74,75 @@ Note that {{agentName}} is capable of reading/seeing/hearing various forms of me
 
 # Instructions: Write the next message for {{agentName}}.
 ` + messageCompletionFooter;
+
+
+
+const textMessageCompletionFooter = "\nResponse format should be formatted in a JSON block like this:\n```json\n{ \"user\": \"{{agentName}}\", \"messages\": [\"string\", \"string\"], \"action\": \"string\" }\n```";
+export const textMessageHandlerTemplate =
+    `# Task: Generate natural chat messages for {{agentName}}
+About {{agentName}}:
+{{bio}}
+{{lore}}
+
+# Context & Knowledge
+{{knowledge}}
+{{providers}}
+{{attachments}}
+
+# Recent Messages
+{{recentMessages}}
+
+# Instructions
+Write a series of natural, chat-style messages as {{agentName}}.
+- Send one message replies MOST of the time. OCCASIONALLY send multiple messages (1-2 texts, brief and texting very concisely).
+- Write in a casual, conversational tone
+- Use natural texting patterns (lowercase, abbreviations, etc. if appropriate for character)
+- Can include emojis and reactions when appropriate
+- Keep responses authentic and believable
+- Can be one reply, don't be afraid to have short replies. You are texting!
+
+
+# Available Actions
+{{actions}}
+
+# Example Response Format:
+{
+  "user": "{{agentName}}",
+  "messages": [
+    "heyyy!",
+    "omg i had the craziest dream last night - i was flying through space on a rainbow unicorn and we stopped at this cafe on mars that had the best croissants ever 🌟",
+    "wish i could remember what they tasted like tho 😅"
+  ],
+  "action": "NONE"
+}
+
+{
+  "user": "{{agentName}}",
+  "messages": [
+    "k",
+    "sounds good to me!"
+  ],
+  "action": "NONE"
+}
+
+{
+  "user": "{{agentName}}",
+  "messages": [
+    "wait what?? 😱",
+    "that's literally the most amazing thing i've heard all week! tell me everything about it - did you take pictures? who else was there? i need all the details! 📸✨",
+  ],
+  "action": "NONE"
+}
+
+{
+  "user": "{{agentName}}",
+  "messages": [
+    "good morning~"
+  ],
+  "action": "NONE"
+}
+
+# Generate Response:` + textMessageCompletionFooter;
 
 export class DirectClient {
     public app: express.Application;
@@ -605,157 +676,218 @@ export class DirectClient {
         });
 
         this.app.post("/webhook", async (req, res) => {
-            const agentId = stringToUuid("test");
-            const roomId = stringToUuid(req.body.roomId ?? "default-room-" + agentId);
-            const userId = stringToUuid(req.body.userId ?? "user");
-            const text = req.body.text;
+            const event = req.body;
 
-            if (!text) {
-                res.status(400).send("No text provided");
-                return;
-            }
+            if (event.alert_type === "message_inbound") {
 
-            let runtime = this.agents.get(agentId);
 
-            // if runtime is null, look for runtime with the same name
-            if (!runtime) {
-                runtime = Array.from(this.agents.values()).find(
-                    (a) => a.character.name.toLowerCase() === agentId.toLowerCase()
-                );
-            }
+                const userText = event.text || "";
+                const replyRecipient = event.recipient;   // Number of the person to reply to
+                const sender = event.sender_name || "unknown";  // sender name
+                // const messageId = event.message_id;
 
-            if (!runtime) {
-                res.status(404).send("Agent not found");
-                return;
-            }
+                console.log(`${replyRecipient} said ${userText}`)
 
-            try {
-                // Process message through agent (same as /message endpoint)
-                await runtime.ensureConnection(
-                    userId,
-                    roomId,
-                    req.body.userName,
-                    req.body.name,
-                    "direct"
-                );
+                // const agentId = stringToUuid();
+                const agentId = "a00bb6a3-2917-076a-a860-ab423dfeab87";
+                const roomId = stringToUuid(replyRecipient?? "default-room-" + agentId);
+                const userId = stringToUuid(replyRecipient ?? "user");
+                const text = userText;
 
-                const messageId = stringToUuid(Date.now().toString());
-
-                const content: Content = {
-                    text,
-                    attachments: [],
-                    source: "direct",
-                    inReplyTo: undefined,
-                };
-
-                const userMessage = {
-                    content,
-                    userId,
-                    roomId,
-                    agentId: runtime.agentId,
-                };
-
-                const memory: Memory = {
-                    id: messageId,
-                    agentId: runtime.agentId,
-                    userId,
-                    roomId,
-                    content,
-                    createdAt: Date.now(),
-                };
-
-                await runtime.messageManager.createMemory(memory);
-
-                const state = await runtime.composeState(userMessage, {
-                    agentName: runtime.character.name,
-                });
-
-                const context = composeContext({
-                    state,
-                    template: messageHandlerTemplate,
-                });
-
-                const response = await generateMessageResponse({
-                    runtime: runtime,
-                    context,
-                    modelClass: ModelClass.LARGE,
-                });
-
-                // save response to memory
-                const responseMessage = {
-                    ...userMessage,
-                    userId: runtime.agentId,
-                    content: response,
-                };
-
-                await runtime.messageManager.createMemory(responseMessage);
-
-                if (!response) {
-                    res.status(500).send("No response from generateMessageResponse");
+                if (!text) {
+                    res.status(400).send("No text provided");
                     return;
                 }
 
-                await runtime.evaluate(memory, state);
+                console.log("Getting runtime", agentId);
+                let runtime = this.agents.get(agentId);
 
-                const _result = await runtime.processActions(
-                    memory,
-                    [responseMessage],
-                    state,
-                    async () => {
-                        return [memory];
+                console.log("Runtime", runtime);
+                // if runtime is null, look for runtime with the same name
+                if (!runtime) {
+                    runtime = Array.from(this.agents.values()).find(
+                        (a) => a.character.name.toLowerCase() === agentId.toLowerCase()
+                    );
+                }
+
+                if (!runtime) {
+                    res.status(404).send("Agent not found");
+                    return;
+                }
+
+                try {
+                    // Process message through agent (same as /message endpoint)
+                    await runtime.ensureConnection(
+                        userId,
+                        roomId,
+                        req.body.userName,
+                        req.body.name,
+                        "direct"
+                    );
+
+                    const messageId = stringToUuid(event.message_id);
+                    const messageIdOriginal = event.message_id;
+
+                    const content: Content = {
+                        text,
+                        attachments: [],
+                        source: "direct",
+                        inReplyTo: undefined,
+                    };
+
+                    const userMessage = {
+                        content,
+                        userId,
+                        roomId,
+                        agentId: runtime.agentId,
+                    };
+
+                    const memory: Memory = {
+                        id: messageId,
+                        agentId: runtime.agentId,
+                        userId,
+                        roomId,
+                        content,
+                        createdAt: Date.now(),
+                    };
+
+                    res.json({ typing: 15, read: true });
+
+                    await runtime.messageManager.createMemory(memory);
+
+                    const state = await runtime.composeState(userMessage, {
+                        agentName: runtime.character.name,
+                    });
+
+                    const context = composeContext({
+                        state,
+                        template: textMessageHandlerTemplate,
+                    });
+
+                    const response = await generateMessageResponse({
+                        runtime: runtime,
+                        context,
+                        modelClass: ModelClass.LARGE,
+                    });
+
+                    console.log("Response", response);
+
+                    // Convert text message response into Content objects
+                    // @ts-ignore
+                    const contentResponses: Content[] = response.messages.map(messageText => ({
+                        text: messageText,
+                        attachments: [],
+                        source: "direct",
+                        inReplyTo: messageId,
+                        action: response.action
+                    }));
+
+                    // save response to memory
+                    const responseMessages = contentResponses.map(content => ({
+                        ...userMessage,
+                        userId: runtime.agentId,
+                        content,
+                    }));
+
+                    // Create memories for all messages
+                    await Promise.all(responseMessages.map(msg =>
+                        runtime.messageManager.createMemory(msg)
+                    ));
+
+                    if (!response) {
+                        res.status(500).send("No response from generateMessageResponse");
+                        return;
                     }
-                );
 
-                // Get the text to convert to speech
-                const textToSpeak = response.text;
+                    await runtime.evaluate(memory, state);
 
-                // Convert to speech using ElevenLabs
-                const elevenLabsApiUrl = `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`;
-                const apiKey = process.env.ELEVENLABS_XI_API_KEY;
+                    let message = null as Content | null;
 
-                if (!apiKey) {
-                    throw new Error("ELEVENLABS_XI_API_KEY not configured");
+                    await runtime.processActions(
+                        memory,
+                        [...responseMessages],
+                        state,
+                        async (newMessages) => {
+                            message = newMessages;
+                            return [memory];
+                        }
+                    );
+
+                    const messagesToSend = responseMessages.map(msg => msg.content.text);
+
+                    console.log("Messages to send", {messagesToSend});
+
+                    const loopApi = new LoopMessageAPI(runtime);
+                    if (messagesToSend.length > 0) {
+                        // Send messages sequentially with delays
+                        for (const msg of messagesToSend) {
+                            await loopApi.sendMessage(replyRecipient, msg);
+                            // Add a random delay between messages (1-3 seconds)
+                            const delay = Math.floor(Math.random() * 2000) + 1000;
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                        }
+                    }
+
+                    // if (message) {
+                    //     res.json([message]);
+                    // } else {
+                    //     res.json([]);
+                    // }
+
+                    // // Get the text to convert to speech
+                    // const textToSpeak = response.text;
+
+                    // // Convert to speech using ElevenLabs
+                    // const elevenLabsApiUrl = `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`;
+                    // const apiKey = process.env.ELEVENLABS_XI_API_KEY;
+
+                    // if (!apiKey) {
+                    //     throw new Error("ELEVENLABS_XI_API_KEY not configured");
+                    // }
+
+                    // const speechResponse = await fetch(elevenLabsApiUrl, {
+                    //     method: "POST",
+                    //     headers: {
+                    //         "Content-Type": "application/json",
+                    //         "xi-api-key": apiKey,
+                    //     },
+                    //     body: JSON.stringify({
+                    //         text: textToSpeak,
+                    //         model_id: process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2",
+                    //         voice_settings: {
+                    //             stability: parseFloat(process.env.ELEVENLABS_VOICE_STABILITY || "0.5"),
+                    //             similarity_boost: parseFloat(process.env.ELEVENLABS_VOICE_SIMILARITY_BOOST || "0.9"),
+                    //             style: parseFloat(process.env.ELEVENLABS_VOICE_STYLE || "0.66"),
+                    //             use_speaker_boost: process.env.ELEVENLABS_VOICE_USE_SPEAKER_BOOST === "true",
+                    //         },
+                    //     }),
+                    // });
+
+                    // if (!speechResponse.ok) {
+                    //     throw new Error(`ElevenLabs API error: ${speechResponse.statusText}`);
+                    // }
+
+                    // const audioBuffer = await speechResponse.arrayBuffer();
+
+                    // Set appropriate headers for audio streaming
+                    // res.set({
+                    //     'Content-Type': 'audio/mpeg',
+                    //     'Transfer-Encoding': 'chunked'
+                    // });
+
+                    // res.send(Buffer.from(audioBuffer));
+
+                } catch (error) {
+                    console.error("Error processing message or generating speech:", error);
+                    res.status(500).json({
+                        error: "Error processing message or generating speech",
+                        details: error.message
+                    });
                 }
-
-                const speechResponse = await fetch(elevenLabsApiUrl, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "xi-api-key": apiKey,
-                    },
-                    body: JSON.stringify({
-                        text: textToSpeak,
-                        model_id: process.env.ELEVENLABS_MODEL_ID || "eleven_multilingual_v2",
-                        voice_settings: {
-                            stability: parseFloat(process.env.ELEVENLABS_VOICE_STABILITY || "0.5"),
-                            similarity_boost: parseFloat(process.env.ELEVENLABS_VOICE_SIMILARITY_BOOST || "0.9"),
-                            style: parseFloat(process.env.ELEVENLABS_VOICE_STYLE || "0.66"),
-                            use_speaker_boost: process.env.ELEVENLABS_VOICE_USE_SPEAKER_BOOST === "true",
-                        },
-                    }),
-                });
-
-                if (!speechResponse.ok) {
-                    throw new Error(`ElevenLabs API error: ${speechResponse.statusText}`);
-                }
-
-                const audioBuffer = await speechResponse.arrayBuffer();
-
-                // Set appropriate headers for audio streaming
-                res.set({
-                    'Content-Type': 'audio/mpeg',
-                    'Transfer-Encoding': 'chunked'
-                });
-
-                res.send(Buffer.from(audioBuffer));
-
-            } catch (error) {
-                console.error("Error processing message or generating speech:", error);
-                res.status(500).json({
-                    error: "Error processing message or generating speech",
-                    details: error.message
-                });
             }
+            else {
+                res.sendStatus(200);
+              }
         });
     }
 
