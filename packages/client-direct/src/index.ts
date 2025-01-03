@@ -77,7 +77,7 @@ Note that {{agentName}} is capable of reading/seeing/hearing various forms of me
 
 
 
-const textMessageCompletionFooter = "\nResponse format should be formatted in a JSON block like this:\n```json\n{ \"user\": \"{{agentName}}\", \"messages\": [\"string\", \"string\"], \"action\": \"string\" }\n```";
+const textMessageCompletionFooter = "\nResponse format should be formatted in a JSON block like this:\n```json\n{ \"user\": \"{{agentName}}\", \"messages\": [{ \"text\": \"string\", \"effect\": \"string\", \"reply_to_id\": \"string\" }], \"action\": \"string\" }\n```";
 export const textMessageHandlerTemplate =
     `# Task: Generate natural chat messages for {{agentName}}
 About {{agentName}}:
@@ -92,15 +92,20 @@ About {{agentName}}:
 # Recent Messages
 {{recentMessages}}
 
+# Current Message ID
+{{currentMessageId}}
+
 # Instructions
 Write a series of natural, chat-style messages as {{agentName}}.
-- Send one message replies MOST of the time. OCCASIONALLY send multiple messages (1-2 texts, brief and texting very concisely).
+- You can send multiple messages (1-3 texts, brief and texting very concisely).
+- If you're sending multiple messages, try to use questions to keep the conversation flowing and interesting.
+- Can be one reply, don't be afraid to have short replies. You are texting!
 - Write in a casual, conversational tone
 - Use natural texting patterns (lowercase, abbreviations, etc. if appropriate for character)
-- Can include emojis and reactions when appropriate
+- Can include emojis and reactions when appropriate. Don't reuse the same emojis please. Be interesting.
 - Keep responses authentic and believable
-- Can be one reply, don't be afraid to have short replies. You are texting!
-
+- You can include an effect to each message. USE IT ONLY ON SPECIAL OCCASIONS. Possible values: slam, loud, invisibleInk, echo, spotlight, balloons, confetti, love, lasers, fireworks, shootingStar, celebration.
+- You can include a reply_to_id to each message. This is the id of the message that the current message is replying to.
 
 # Available Actions
 {{actions}}
@@ -109,9 +114,9 @@ Write a series of natural, chat-style messages as {{agentName}}.
 {
   "user": "{{agentName}}",
   "messages": [
-    "heyyy!",
-    "omg i had the craziest dream last night - i was flying through space on a rainbow unicorn and we stopped at this cafe on mars that had the best croissants ever 🌟",
-    "wish i could remember what they tasted like tho 😅"
+    { "text": "heyyy!", "effect": "none", "reply_to_id": undefined },
+    { "text": "omg i had the craziest dream last night - i was flying through space on a rainbow unicorn and we stopped at this cafe on mars that had the best croissants ever 🌟", "effect": "none", "reply_to_id": undefined },
+    { "text": "wish i could remember what they tasted like tho 😅", "effect": "none", "reply_to_id": undefined }
   ],
   "action": "NONE"
 }
@@ -119,8 +124,7 @@ Write a series of natural, chat-style messages as {{agentName}}.
 {
   "user": "{{agentName}}",
   "messages": [
-    "k",
-    "sounds good to me!"
+    { "text": "sounds good to me!", "effect": "love", "reply_to_id": "< Current Message ID >" }
   ],
   "action": "NONE"
 }
@@ -128,8 +132,8 @@ Write a series of natural, chat-style messages as {{agentName}}.
 {
   "user": "{{agentName}}",
   "messages": [
-    "wait what?? 😱",
-    "that's literally the most amazing thing i've heard all week! tell me everything about it - did you take pictures? who else was there? i need all the details! 📸✨",
+    { "text": "wait what?? 😱", "effect": "none", "reply_to_id": "< Current Message ID >" },
+    { "text": "that's literally the most amazing thing i've heard all week! tell me everything about it - did you take pictures? who else was there? i need all the details! 📸✨", "effect": "none", "reply_to_id": "< Current Message ID >" },
   ],
   "action": "NONE"
 }
@@ -137,7 +141,8 @@ Write a series of natural, chat-style messages as {{agentName}}.
 {
   "user": "{{agentName}}",
   "messages": [
-    "good morning~"
+    { "text": "good morning~", "effect": "love", "reply_to_id": "undefined" },
+    { "text": "did you sleep well?", "effect": "none", "reply_to_id": "undefined" }
   ],
   "action": "NONE"
 }
@@ -757,6 +762,7 @@ export class DirectClient {
 
                     const state = await runtime.composeState(userMessage, {
                         agentName: runtime.character.name,
+                        currentMessageId: messageIdOriginal,
                     });
 
                     const context = composeContext({
@@ -767,19 +773,19 @@ export class DirectClient {
                     const response = await generateMessageResponse({
                         runtime: runtime,
                         context,
-                        modelClass: ModelClass.LARGE,
+                        modelClass: ModelClass.MEDIUM,
                     });
 
-                    console.log("Response", response);
+                    console.log("Response", {response, messages: response.messages});
 
                     // Convert text message response into Content objects
                     // @ts-ignore
-                    const contentResponses: Content[] = response.messages.map(messageText => ({
-                        text: messageText,
+                    const contentResponses: Content[] = response.messages.map(message => ({
+                        text: message.text,
                         attachments: [],
                         source: "direct",
                         inReplyTo: messageId,
-                        action: response.action
+                        action: response.action,
                     }));
 
                     // save response to memory
@@ -789,10 +795,17 @@ export class DirectClient {
                         content,
                     }));
 
-                    // Create memories for all messages
-                    await Promise.all(responseMessages.map(msg =>
-                        runtime.messageManager.createMemory(msg)
-                    ));
+
+                    console.log("Response messages", {responseMessages, contentResponses});
+
+                    // Create memories for all messages with error handling
+                    try {
+                        await Promise.all(responseMessages.map(async (msg) => {
+                            await runtime.messageManager.createMemory(msg);
+                        }));
+                    } catch (error) {
+                        console.error("Error creating memory for messages:", error);
+                    }
 
                     if (!response) {
                         res.status(500).send("No response from generateMessageResponse");
@@ -813,15 +826,20 @@ export class DirectClient {
                         }
                     );
 
-                    const messagesToSend = responseMessages.map(msg => msg.content.text);
 
+                    // @ts-ignore
+                    const messagesToSend = response.messages as any[]
                     console.log("Messages to send", {messagesToSend});
 
                     const loopApi = new LoopMessageAPI(runtime);
                     if (messagesToSend.length > 0) {
                         // Send messages sequentially with delays
                         for (const msg of messagesToSend) {
-                            await loopApi.sendMessage(replyRecipient, msg);
+                            await loopApi.sendMessage(replyRecipient, msg.text, {
+                                // effect: msg.effect,
+                                // reply_to_id: msg.reply_to_id,
+                            });
+                            // res.json({ typing: 2 });
                             // Add a random delay between messages (1-3 seconds)
                             const delay = Math.floor(Math.random() * 2000) + 1000;
                             await new Promise(resolve => setTimeout(resolve, delay));

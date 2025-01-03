@@ -25,6 +25,8 @@ export class LoopMessageAPI {
       media_url?: string;
       audio_message?: boolean;
       attachments?: string[];
+      effect?: string;
+      reply_to_id?: string;
     }
   ): Promise<boolean> {
     try {
@@ -44,6 +46,8 @@ export class LoopMessageAPI {
             ...(options?.media_url && { media_url: options.media_url }),
             ...(options?.audio_message && { audio_message: true }),
             ...(options?.attachments && { attachments: options.attachments }),
+            ...(options?.effect && { effect: options.effect }),
+            ...(options?.reply_to_id && { reply_to_id: options.reply_to_id }),
           }),
         }
       );
