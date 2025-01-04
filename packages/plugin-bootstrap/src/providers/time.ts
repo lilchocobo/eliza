@@ -4,9 +4,9 @@ const timeProvider: Provider = {
     get: async (_runtime: IAgentRuntime, _message: Memory, _state?: State) => {
         const currentDate = new Date();
 
-        // Get UTC time since bots will be communicating with users around the global
+        // Use Central Time for time-based operations
         const options = {
-            timeZone: "UTC",
+            timeZone: "America/Chicago",
             dateStyle: "full" as const,
             timeStyle: "long" as const,
         };

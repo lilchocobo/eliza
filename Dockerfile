@@ -51,5 +51,5 @@ COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/characters ./characters
 
-# Set the command to run the application
-CMD ["pnpm", "start"]
+# Set the command to run the application with the faith character
+CMD ["pnpm", "start", "--characters=./characters/faith.character.json"]
